@@ -191,6 +191,41 @@ pub(crate) async fn did_change(
     Ok(())
 }
 
+/// Handler for `textDocument/didSave` LSP notification
+#[tracing::instrument(level = "debug", skip(session), err)]
+pub(crate) async fn did_save(
+    session: &Session,
+    params: lsp_types::DidSaveTextDocumentParams,
+) -> Result<(), LspError> {
+    let url = params.text_document.uri;
+    let path = session.file_path(&url)?;
+    let Some(doc) = session.document(&url) else {
+        return Ok(());
+    };
+
+    // Trigger reindexing from disk to sync with saved content
+    session.workspace.close_file(CloseFileParams {
+        project_key: doc.project_key,
+        path: path.clone(),
+    })?;
+
+    // Reopen will load from disk
+    session.workspace.open_file(OpenFileParams {
+        project_key: doc.project_key,
+        path,
+        content: FileContent::FromServer,
+        document_file_source: None,
+        persist_node_cache: true,
+    })?;
+
+    // Update diagnostics with fresh content
+    if let Err(err) = session.update_diagnostics(url).await {
+        error!("Failed to update diagnostics after save: {}", err);
+    }
+
+    Ok(())
+}
+
 /// Handler for `textDocument/didClose` LSP notification
 #[tracing::instrument(level = "debug", skip(session), err)]
 pub(crate) async fn did_close(
